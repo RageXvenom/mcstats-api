@@ -1,6 +1,5 @@
 // server.js
 const express = require('express');
-const fs = require('fs');
 const jwt = require('jsonwebtoken');
 const bodyParser = require('body-parser');
 const cors = require('cors');
@@ -9,39 +8,37 @@ require('dotenv').config();
 
 const app = express();
 app.use(bodyParser.json());
-app.use(cors());
+app.use(cors({ origin: '*' })); // Allow your frontend
 
-const SECRET = process.env.JWT_SECRET || 'fallback-secret';
+const SECRET = process.env.JWT_SECRET || 'fallback';
 const ADMIN_EMAIL = process.env.ADMIN_EMAIL;
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
 const DB_FILE = './db.sqlite';
 
-if (!ADMIN_EMAIL || !ADMIN_PASSWORD) {
-  console.error('Set ADMIN_EMAIL and ADMIN_PASSWORD in .env');
+// Validate env
+if (!ADMIN_EMAIL || !ADMIN_PASSWORD || !SECRET) {
+  console.error('Missing ADMIN_EMAIL, ADMIN_PASSWORD, or JWT_SECRET');
   process.exit(1);
 }
 
-// === Initialize SQLite ===
-const db = new sqlite3.Database(DB_FILE, (err) => {
-  if (err) console.error('DB error:', err);
-  else console.log('SQLite connected');
-});
-
+// Init DB
+const db = new sqlite3.Database(DB_FILE);
 db.serialize(() => {
   db.run(`
     CREATE TABLE IF NOT EXISTS announcements (
       id TEXT PRIMARY KEY,
-      title TEXT NOT NULL,
-      message TEXT NOT NULL,
-      type TEXT NOT NULL,
-      createdAt TEXT NOT NULL
+      title TEXT,
+      message TEXT,
+      type TEXT,
+      createdAt TEXT
     )
   `);
 });
 
-// === Middleware ===
+// Middleware
 const authenticate = (req, res, next) => {
-  const token = req.headers.authorization?.split(' ')[1];
+  const auth = req.headers.authorization;
+  const token = auth?.startsWith('Bearer ') ? auth.split(' ')[1] : null;
   if (!token) return res.status(401).json({ error: 'No token' });
 
   jwt.verify(token, SECRET, (err, user) => {
@@ -51,11 +48,11 @@ const authenticate = (req, res, next) => {
   });
 };
 
-// === Routes ===
+// Routes
 app.post('/login', (req, res) => {
   const { email, password } = req.body;
   if (email === ADMIN_EMAIL && password === ADMIN_PASSWORD) {
-    const token = jwt.sign({ email }, SECRET, { expiresIn: '24h' });
+    const token = jwt.sign({ email }, SECRET, { expiresIn: '7d' });
     res.json({ token });
   } else {
     res.status(401).json({ error: 'Invalid credentials' });
@@ -71,6 +68,8 @@ app.get('/announcements', (req, res) => {
 
 app.post('/announcements', authenticate, (req, res) => {
   const { title, message, type = 'info' } = req.body;
+  if (!title || !message) return res.status(400).json({ error: 'Title and message required' });
+
   const id = Date.now().toString();
   const createdAt = new Date().toISOString();
 
@@ -92,8 +91,5 @@ app.delete('/announcements/:id', authenticate, (req, res) => {
   });
 });
 
-// === Start ===
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`API running on port ${PORT}`);
-});
+app.listen(PORT, () => console.log(`API running on port ${PORT}`));
