@@ -20,11 +20,10 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
-// --- Helper Middleware ---
+// -------------------- AUTH MIDDLEWARE --------------------
 const authenticate = (req, res, next) => {
   const authHeader = req.headers["authorization"];
   if (!authHeader) return res.status(401).json({ error: "No token" });
-
   const token = authHeader.split(" ")[1];
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
@@ -35,20 +34,22 @@ const authenticate = (req, res, next) => {
   }
 };
 
-// --- Health Route ---
+// -------------------- HEALTH CHECK --------------------
 app.get("/api/health", (req, res) => {
   res.json({ status: "OK", time: new Date().toISOString() });
 });
 
-// --- Admin Login ---
+// -------------------- ADMIN LOGIN --------------------
 app.post("/api/login", async (req, res) => {
   const { email, password } = req.body;
 
-  const { data: admins } = await supabase
+  const { data: admins, error: fetchErr } = await supabase
     .from("admins")
     .select("*")
     .eq("email", email)
     .limit(1);
+
+  if (fetchErr) return res.status(500).json({ error: fetchErr.message });
 
   const admin = admins?.[0];
   if (!admin) return res.status(401).json({ error: "Invalid credentials" });
@@ -62,18 +63,22 @@ app.post("/api/login", async (req, res) => {
   res.json({ token });
 });
 
-// --- Register Admin (manual use only) ---
+// -------------------- REGISTER ADMIN (run once) --------------------
 app.post("/api/register-admin", async (req, res) => {
   const { email, password } = req.body;
+  if (!email || !password)
+    return res.status(400).json({ error: "Email and password required" });
+
   const hash = await bcrypt.hash(password, 10);
   const { error } = await supabase
     .from("admins")
     .insert([{ email, password: hash }]);
+
   if (error) return res.status(400).json({ error: error.message });
-  res.json({ message: "Admin created" });
+  res.json({ message: "Admin created successfully" });
 });
 
-// --- Get All Announcements ---
+// -------------------- GET ALL ANNOUNCEMENTS --------------------
 app.get("/api/announcements", async (req, res) => {
   const { data, error } = await supabase
     .from("announcements")
@@ -84,9 +89,11 @@ app.get("/api/announcements", async (req, res) => {
   res.json(data);
 });
 
-// --- Create Announcement ---
+// -------------------- CREATE ANNOUNCEMENT --------------------
 app.post("/api/announcements", authenticate, async (req, res) => {
   const { title, message, type } = req.body;
+  if (!title || !message)
+    return res.status(400).json({ error: "Title and message required" });
 
   const { data, error } = await supabase
     .from("announcements")
@@ -98,19 +105,16 @@ app.post("/api/announcements", authenticate, async (req, res) => {
   res.json(data);
 });
 
-// --- Delete Announcement ---
+// -------------------- DELETE ANNOUNCEMENT --------------------
 app.delete("/api/announcements/:id", authenticate, async (req, res) => {
   const { id } = req.params;
-  const { error } = await supabase
-    .from("announcements")
-    .delete()
-    .eq("id", id);
+  const { error } = await supabase.from("announcements").delete().eq("id", id);
 
   if (error) return res.status(500).json({ error: error.message });
   res.json({ message: "Deleted successfully" });
 });
 
-// --- Start Server ---
+// -------------------- START SERVER --------------------
 app.listen(PORT, () => {
   console.log(`✅ API running on port ${PORT}`);
 });
