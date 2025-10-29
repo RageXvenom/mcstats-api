@@ -3,7 +3,10 @@ import cors from "cors";
 import bodyParser from "body-parser";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
+import dotenv from "dotenv";
 import { createClient } from "@supabase/supabase-js";
+
+dotenv.config();
 
 const app = express();
 app.use(cors());
@@ -33,12 +36,12 @@ const authenticate = (req, res, next) => {
 };
 
 // --- Health Route ---
-app.get("/health", (req, res) => {
+app.get("/api/health", (req, res) => {
   res.json({ status: "OK", time: new Date().toISOString() });
 });
 
 // --- Admin Login ---
-app.post("/login", async (req, res) => {
+app.post("/api/login", async (req, res) => {
   const { email, password } = req.body;
 
   const { data: admins } = await supabase
@@ -60,45 +63,54 @@ app.post("/login", async (req, res) => {
 });
 
 // --- Register Admin (manual use only) ---
-app.post("/register-admin", async (req, res) => {
+app.post("/api/register-admin", async (req, res) => {
   const { email, password } = req.body;
   const hash = await bcrypt.hash(password, 10);
-  const { error } = await supabase.from("admins").insert([{ email, password: hash }]);
+  const { error } = await supabase
+    .from("admins")
+    .insert([{ email, password: hash }]);
   if (error) return res.status(400).json({ error: error.message });
   res.json({ message: "Admin created" });
 });
 
 // --- Get All Announcements ---
-app.get("/announcements", async (req, res) => {
+app.get("/api/announcements", async (req, res) => {
   const { data, error } = await supabase
     .from("announcements")
     .select("*")
     .order("created_at", { ascending: false });
+
   if (error) return res.status(500).json({ error: error.message });
   res.json(data);
 });
 
 // --- Create Announcement ---
-app.post("/announcements", authenticate, async (req, res) => {
+app.post("/api/announcements", authenticate, async (req, res) => {
   const { title, message, type } = req.body;
+
   const { data, error } = await supabase
     .from("announcements")
     .insert([{ title, message, type }])
     .select()
     .single();
+
   if (error) return res.status(500).json({ error: error.message });
   res.json(data);
 });
 
 // --- Delete Announcement ---
-app.delete("/announcements/:id", authenticate, async (req, res) => {
+app.delete("/api/announcements/:id", authenticate, async (req, res) => {
   const { id } = req.params;
-  const { error } = await supabase.from("announcements").delete().eq("id", id);
+  const { error } = await supabase
+    .from("announcements")
+    .delete()
+    .eq("id", id);
+
   if (error) return res.status(500).json({ error: error.message });
   res.json({ message: "Deleted successfully" });
 });
 
 // --- Start Server ---
 app.listen(PORT, () => {
-  console.log(`✅ Server running on port ${PORT}`);
+  console.log(`✅ API running on port ${PORT}`);
 });
