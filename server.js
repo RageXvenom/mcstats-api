@@ -15,15 +15,17 @@ app.use(bodyParser.json());
 const PORT = process.env.PORT || 3000;
 const JWT_SECRET = process.env.JWT_SECRET || "supersecretkey";
 
+// Initialize Supabase client
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
-// -------------------- AUTH MIDDLEWARE --------------------
+// --- Helper Middleware ---
 const authenticate = (req, res, next) => {
   const authHeader = req.headers["authorization"];
   if (!authHeader) return res.status(401).json({ error: "No token" });
+
   const token = authHeader.split(" ")[1];
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
@@ -34,22 +36,20 @@ const authenticate = (req, res, next) => {
   }
 };
 
-// -------------------- HEALTH CHECK --------------------
+// --- Health Route ---
 app.get("/api/health", (req, res) => {
   res.json({ status: "OK", time: new Date().toISOString() });
 });
 
-// -------------------- ADMIN LOGIN --------------------
+// --- Admin Login ---
 app.post("/api/login", async (req, res) => {
   const { email, password } = req.body;
 
-  const { data: admins, error: fetchErr } = await supabase
+  const { data: admins } = await supabase
     .from("admins")
     .select("*")
     .eq("email", email)
     .limit(1);
-
-  if (fetchErr) return res.status(500).json({ error: fetchErr.message });
 
   const admin = admins?.[0];
   if (!admin) return res.status(401).json({ error: "Invalid credentials" });
@@ -60,25 +60,23 @@ app.post("/api/login", async (req, res) => {
   const token = jwt.sign({ id: admin.id, email: admin.email }, JWT_SECRET, {
     expiresIn: "7d",
   });
+
   res.json({ token });
 });
 
-// -------------------- REGISTER ADMIN (run once) --------------------
+// --- Register Admin (manual use only) ---
 app.post("/api/register-admin", async (req, res) => {
   const { email, password } = req.body;
-  if (!email || !password)
-    return res.status(400).json({ error: "Email and password required" });
-
   const hash = await bcrypt.hash(password, 10);
   const { error } = await supabase
     .from("admins")
     .insert([{ email, password: hash }]);
 
   if (error) return res.status(400).json({ error: error.message });
-  res.json({ message: "Admin created successfully" });
+  res.json({ message: "Admin created" });
 });
 
-// -------------------- GET ALL ANNOUNCEMENTS --------------------
+// --- Get All Announcements ---
 app.get("/api/announcements", async (req, res) => {
   const { data, error } = await supabase
     .from("announcements")
@@ -89,11 +87,9 @@ app.get("/api/announcements", async (req, res) => {
   res.json(data);
 });
 
-// -------------------- CREATE ANNOUNCEMENT --------------------
+// --- Create Announcement ---
 app.post("/api/announcements", authenticate, async (req, res) => {
   const { title, message, type } = req.body;
-  if (!title || !message)
-    return res.status(400).json({ error: "Title and message required" });
 
   const { data, error } = await supabase
     .from("announcements")
@@ -105,16 +101,28 @@ app.post("/api/announcements", authenticate, async (req, res) => {
   res.json(data);
 });
 
-// -------------------- DELETE ANNOUNCEMENT --------------------
+// --- Delete Announcement ---
 app.delete("/api/announcements/:id", authenticate, async (req, res) => {
   const { id } = req.params;
-  const { error } = await supabase.from("announcements").delete().eq("id", id);
+  const { error } = await supabase
+    .from("announcements")
+    .delete()
+    .eq("id", id);
 
   if (error) return res.status(500).json({ error: error.message });
   res.json({ message: "Deleted successfully" });
 });
 
-// -------------------- START SERVER --------------------
+// --- Backward Compatibility for Old Routes (No Frontend Change Needed) ---
+app.post("/login", (req, res) => res.redirect(307, "/api/login"));
+app.post("/register-admin", (req, res) => res.redirect(307, "/api/register-admin"));
+app.get("/announcements", (req, res) => res.redirect(307, "/api/announcements"));
+app.post("/announcements", (req, res) => res.redirect(307, "/api/announcements"));
+app.delete("/announcements/:id", (req, res) =>
+  res.redirect(307, `/api/announcements/${req.params.id}`)
+);
+
+// --- Start Server ---
 app.listen(PORT, () => {
   console.log(`✅ API running on port ${PORT}`);
 });
