@@ -1,161 +1,104 @@
-// server.js
-const express = require('express');
-const jwt = require('jsonwebtoken');
-const bodyParser = require('body-parser');
-const cors = require('cors');
-const sqlite3 = require('sqlite3').verbose();
-const path = require('path');
-require('dotenv').config();
+import express from "express";
+import cors from "cors";
+import bodyParser from "body-parser";
+import bcrypt from "bcryptjs";
+import jwt from "jsonwebtoken";
+import { createClient } from "@supabase/supabase-js";
 
 const app = express();
+app.use(cors());
 app.use(bodyParser.json());
-app.use(cors({ origin: '*' })); // Allow all origins
 
-// ─────────────────────────────────────────────────────────────────────
-// Environment Variables
-// ─────────────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 3000;
-const ADMIN_EMAIL = process.env.ADMIN_EMAIL?.trim();
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD?.trim();
-const JWT_SECRET = process.env.JWT_SECRET?.trim() || 'fallback-secret-change-me';
+const JWT_SECRET = process.env.JWT_SECRET || "supersecretkey";
 
-if (!ADMIN_EMAIL || !ADMIN_PASSWORD) {
-  console.error('ERROR: ADMIN_EMAIL and ADMIN_PASSWORD are required in .env');
-  process.exit(1);
-}
-if (JWT_SECRET === 'fallback-secret-change-me') {
-  console.warn('WARNING: Using default JWT_SECRET. Generate a strong one!');
-}
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE_KEY
+);
 
-// ─────────────────────────────────────────────────────────────────────
-// SQLite Setup
-// ─────────────────────────────────────────────────────────────────────
-const DB_PATH = path.join(__dirname, 'db.sqlite');
-const db = new sqlite3.Database(DB_PATH, (err) => {
-  if (err) {
-    console.error('Database connection error:', err.message);
-    process.exit(1);
-  } else {
-    console.log('Connected to SQLite database at:', DB_PATH);
-  }
-});
-
-db.serialize(() => {
-  db.run(`
-    CREATE TABLE IF NOT EXISTS announcements (
-      id TEXT PRIMARY KEY,
-      title TEXT NOT NULL,
-      message TEXT NOT NULL,
-      type TEXT NOT NULL,
-      createdAt TEXT NOT NULL
-    )
-  `);
-});
-
-// ─────────────────────────────────────────────────────────────────────
-// JWT Middleware
-// ─────────────────────────────────────────────────────────────────────
+// --- Helper Middleware ---
 const authenticate = (req, res, next) => {
-  const authHeader = req.headers.authorization;
-  const token = authHeader?.startsWith('Bearer ') ? authHeader.split(' ')[1] : null;
-  if (!token) return res.status(401).json({ error: 'No token provided' });
+  const authHeader = req.headers["authorization"];
+  if (!authHeader) return res.status(401).json({ error: "No token" });
 
-  jwt.verify(token, JWT_SECRET, (err, user) => {
-    if (err) {
-      console.log('Invalid token from:', req.ip);
-      return res.status(403).json({ error: 'Invalid or expired token' });
-    }
-    req.user = user;
+  const token = authHeader.split(" ")[1];
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    req.user = decoded;
     next();
-  });
+  } catch {
+    return res.status(403).json({ error: "Invalid token" });
+  }
 };
 
-// ─────────────────────────────────────────────────────────────────────
-// Routes
-// ─────────────────────────────────────────────────────────────────────
+// --- Health Route ---
+app.get("/health", (req, res) => {
+  res.json({ status: "OK", time: new Date().toISOString() });
+});
 
-// Login
-app.post('/login', (req, res) => {
+// --- Admin Login ---
+app.post("/login", async (req, res) => {
   const { email, password } = req.body;
-  console.log('Login attempt:', { email, ip: req.ip });
 
-  if (email === ADMIN_EMAIL && password === ADMIN_PASSWORD) {
-    const token = jwt.sign({ email }, JWT_SECRET, { expiresIn: '7d' });
-    console.log('Login SUCCESS for:', email);
-    res.json({ token });
-  } else {
-    console.log('Login FAILED for:', email);
-    res.status(401).json({ error: 'Invalid email or password' });
-  }
+  const { data: admins } = await supabase
+    .from("admins")
+    .select("*")
+    .eq("email", email)
+    .limit(1);
+
+  const admin = admins?.[0];
+  if (!admin) return res.status(401).json({ error: "Invalid credentials" });
+
+  const match = await bcrypt.compare(password, admin.password);
+  if (!match) return res.status(401).json({ error: "Invalid credentials" });
+
+  const token = jwt.sign({ id: admin.id, email: admin.email }, JWT_SECRET, {
+    expiresIn: "7d",
+  });
+  res.json({ token });
 });
 
-// Helper: unified GET handler for announcements
-function getAnnouncementsHandler(req, res) {
-  db.all('SELECT * FROM announcements ORDER BY createdAt DESC', (err, rows) => {
-    if (err) {
-      console.error('DB error (GET):', err.message);
-      return res.status(500).json({ error: 'Database error' });
-    }
-    res.json(rows);
-  });
-}
+// --- Register Admin (manual use only) ---
+app.post("/register-admin", async (req, res) => {
+  const { email, password } = req.body;
+  const hash = await bcrypt.hash(password, 10);
+  const { error } = await supabase.from("admins").insert([{ email, password: hash }]);
+  if (error) return res.status(400).json({ error: error.message });
+  res.json({ message: "Admin created" });
+});
 
-// Helper: unified POST handler for announcements
-function postAnnouncementHandler(req, res) {
-  const { title, message, type = 'info' } = req.body;
-  if (!title?.trim() || !message?.trim()) {
-    return res.status(400).json({ error: 'Title and message are required' });
-  }
+// --- Get All Announcements ---
+app.get("/announcements", async (req, res) => {
+  const { data, error } = await supabase
+    .from("announcements")
+    .select("*")
+    .order("created_at", { ascending: false });
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
+});
 
-  const id = Date.now().toString();
-  const createdAt = new Date().toISOString();
-  db.run(
-    `INSERT INTO announcements (id, title, message, type, createdAt) VALUES (?, ?, ?, ?, ?)`,
-    [id, title.trim(), message.trim(), type, createdAt],
-    function (err) {
-      if (err) {
-        console.error('DB error (INSERT):', err.message);
-        return res.status(500).json({ error: 'Failed to save' });
-      }
-      console.log('Announcement added:', { id, title });
-      res.json({ id, title: title.trim(), message: message.trim(), type, createdAt });
-    }
-  );
-}
+// --- Create Announcement ---
+app.post("/announcements", authenticate, async (req, res) => {
+  const { title, message, type } = req.body;
+  const { data, error } = await supabase
+    .from("announcements")
+    .insert([{ title, message, type }])
+    .select()
+    .single();
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
+});
 
-// Helper: unified DELETE handler for announcements
-function deleteAnnouncementHandler(req, res) {
+// --- Delete Announcement ---
+app.delete("/announcements/:id", authenticate, async (req, res) => {
   const { id } = req.params;
-  db.run(`DELETE FROM announcements WHERE id = ?`, [id], function (err) {
-    if (err) {
-      console.error('DB error (DELETE):', err.message);
-      return res.status(500).json({ error: 'Failed to delete' });
-    }
-    if (this.changes === 0) return res.status(404).json({ error: 'Announcement not found' });
-    console.log('Announcement deleted:', id);
-    res.json({ success: true });
-  });
-}
-
-// Main routes
-app.get('/announcements', getAnnouncementsHandler);
-app.post('/announcements', authenticate, postAnnouncementHandler);
-app.delete('/announcements/:id', authenticate, deleteAnnouncementHandler);
-
-// API-prefixed aliases for frontend compatibility
-app.get('/api/announcements', getAnnouncementsHandler);
-app.post('/api/announcements', authenticate, postAnnouncementHandler);
-app.delete('/api/announcements/:id', authenticate, deleteAnnouncementHandler);
-
-// Health check
-app.get('/health', (req, res) => {
-  res.json({ status: 'OK', time: new Date().toISOString() });
+  const { error } = await supabase.from("announcements").delete().eq("id", id);
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ message: "Deleted successfully" });
 });
 
-// ─────────────────────────────────────────────────────────────────────
-// Start Server
-// ─────────────────────────────────────────────────────────────────────
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`✅ Server running on http://209.25.141.185:${PORT}`);
-  console.log(`Admin login email: ${ADMIN_EMAIL}`);
+// --- Start Server ---
+app.listen(PORT, () => {
+  console.log(`✅ Server running on port ${PORT}`);
 });
